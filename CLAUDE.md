@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Note**: See [AI-usage.md](AI-usage.md) for a detailed report on how Claude Code was used to develop this project, including what worked well and what required correction.
+
 ## Project Overview
 
 This is a research data repository for a master's thesis project studying protein-protein interactions (PPI) in salmon gene duplicates following whole-genome duplication (WGD). The project investigates how duplicate genes in different expression categories (cons-down, down-down, cons-up, etc.) maintain or lose protein-protein interactions compared to their orthologs in pike (a non-duplicated outgroup species).
@@ -77,8 +79,14 @@ This will download:
   - 4,217 pairs between 1:1:2 and 1:1:1 genes
   - 1,437 pairs between two 1:1:1 genes
 
-**Report:**
-- **ortholog_mapping_report.html**: Interactive HTML report with gene-level analysis
+**Reports:**
+- **ortholog_mapping_report.md**: GitHub-viewable markdown report (in git)
+  - View directly on GitHub with embedded figures
+  - Figures stored in `ortholog_mapping_report_files/figure-gfm/`
+- **ortholog_mapping_report.html**: Interactive HTML report (local viewing, not in git)
+  - Same content as markdown but with enhanced interactivity
+
+**Report Contents:**
   - Canonical ortholog ratio distributions
   - PPI genes and pairs in canonical OGs
   - Why genes aren't in canonical ratios (mammalian-specific, complex orthology)
@@ -140,11 +148,23 @@ The PPI data uses UniProt IDs, while OGtbl uses Ensembl gene IDs. The mapping pi
    - Outputs: `gene_level_ppi.tsv`, `canonical_ortholog_genes.tsv`, `gene_level_ppi_canonical.tsv`
    - Key finding: 49.7% of genes in canonical OGs; 26.4% of pairs have both genes in canonical OGs
 
-5. **Generate Report**: `Rscript -e "rmarkdown::render('ortholog_mapping_report.Rmd')"`
-   - Creates interactive HTML report with gene-level analysis
-   - Focuses on canonical ortholog ratios (1:1:1 and 1:1:2)
-   - Analyzes PPI pairs where both genes are in canonical OGs
-   - Outputs: `ortholog_mapping_report.html`
+5. **Generate Reports**:
+   - **For GitHub viewing** (markdown):
+     ```bash
+     Rscript -e "rmarkdown::render('ortholog_mapping_report.Rmd', output_format = 'github_document', output_file = 'ortholog_mapping_report.md')"
+     ```
+     - Creates `ortholog_mapping_report.md` viewable on GitHub
+     - Generates PNG figures in `ortholog_mapping_report_files/figure-gfm/`
+   - **For local viewing** (HTML):
+     ```bash
+     Rscript -e "rmarkdown::render('ortholog_mapping_report.Rmd')"
+     ```
+     - Creates `ortholog_mapping_report.html` for interactive local viewing
+
+   Both reports include:
+   - Gene-level analysis with canonical ortholog ratios (1:1:1 and 1:1:2)
+   - PPI pairs where both genes are in canonical OGs
+   - Visualizations and statistical summaries
 
 ## Identifier Systems
 

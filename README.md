@@ -40,13 +40,20 @@ Rscript map_ppi_to_orthologs.R
 # 4. Collapse to gene level and identify canonical ortholog ratios
 Rscript collapse_to_gene_level.R
 
-# 5. Generate HTML report
+# 5a. Generate markdown report (for GitHub)
+Rscript -e "rmarkdown::render('ortholog_mapping_report.Rmd', output_format = 'github_document', output_file = 'ortholog_mapping_report.md')"
+
+# 5b. Generate HTML report (for local viewing)
 Rscript -e "rmarkdown::render('ortholog_mapping_report.Rmd')"
 ```
 
 ### 3. View Results
 
-Open `ortholog_mapping_report.html` in your web browser to see:
+**On GitHub**: View [ortholog_mapping_report.md](ortholog_mapping_report.md) directly on GitHub with embedded figures
+
+**Locally**: Open `ortholog_mapping_report.html` in your web browser
+
+Both reports show:
 - Gene-level PPI analysis
 - Canonical ortholog ratios (1:1:1 and 1:1:2)
 - PPI pairs suitable for comparative analysis
@@ -75,6 +82,7 @@ Open `ortholog_mapping_report.html` in your web browser to see:
 ├── collapse_to_gene_level.R      # Step 4: Gene-level analysis
 ├── ortholog_mapping_report.Rmd   # Step 5: Generate report
 ├── CLAUDE.md                     # Detailed documentation for Claude Code
+├── AI-usage.md                   # Report on Claude Code usage in this project
 └── meeting notes.md              # Project planning notes (Norwegian)
 ```
 
@@ -87,6 +95,12 @@ See [CLAUDE.md](CLAUDE.md) for detailed documentation including:
 - Canonical ortholog ratios explained
 - Key concepts (rediploidization, WGD, etc.)
 
+See [AI-usage.md](AI-usage.md) for a transparent report on how AI (Claude Code) was used to develop this project:
+- All user prompts and AI responses
+- Analysis of what worked and what required correction
+- Lessons learned about AI-assisted scientific programming
+- Recommendations for future projects
+
 ## Citation
 
 If you use the human PPI data, please cite:
@@ -97,4 +111,3 @@ If you use the human PPI data, please cite:
 
 Research use only. Please check data sources for specific licensing:
 - [Cong Lab Human PPI Data](https://conglab.swmed.edu/humanPPI/)
-- [SalmoBase](https://salmobase.org/)
