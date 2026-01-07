@@ -1,0 +1,174 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+This is a research data repository for a master's thesis project studying protein-protein interactions (PPI) in salmon gene duplicates following whole-genome duplication (WGD). The project investigates how duplicate genes in different expression categories (cons-down, down-down, cons-up, etc.) maintain or lose protein-protein interactions compared to their orthologs in pike (a non-duplicated outgroup species).
+
+## Species of Interest
+
+- **Hsap**: Human (Homo sapiens) - used for PPI reference data
+- **Eluc**: Pike (Esox lucius) - non-duplicated outgroup species for comparison
+- **Ssal**: Salmon (Salmo salar) - target species with whole-genome duplication
+
+## Getting Started
+
+### Download Required Data
+
+Large data files are not included in the repository. Download them using:
+
+```bash
+bash download_data.sh
+```
+
+This will download:
+- **Human PPI predictions** from https://conglab.swmed.edu/humanPPI/
+  - Paper: [Predicting protein-protein interactions in the human proteome](https://doi.org/10.1126/science.adt1630) (Science, 2024)
+  - Files: `final_predictions_80.tsv`, `final_predictions_90.tsv` (extracted from tar.gz)
+- **Ortholog group table** from [SalmoBase](https://salmobase.org/)
+  - File: `OGtbl.tsv` (115MB)
+
+## Repository Contents
+
+### Data Files (downloaded via `download_data.sh`)
+- **meeting notes.md**: Project planning notes (in Norwegian) detailing the research workflow and hypotheses
+- **OGtbl.tsv**: Ortholog group table from SalmoBase (115MB)
+  - Contains gene-level orthology relationships across multiple species
+  - Key columns: `OG` (ortholog group), `geneID` (Ensembl gene ID), `spc` (species code)
+  - Hierarchical ortholog groups at different taxonomic levels (N0-N17)
+  - Paralogs from the tip branch in `Tip` column
+  - Used to identify salmon duplicates and their pike orthologs
+- **final_predictions/**: Contains predicted PPI data at 80% and 90% precision thresholds
+  - Source: [Cong Lab Human PPI Database](https://conglab.swmed.edu/humanPPI/)
+  - Paper: [Predicting protein-protein interactions in the human proteome](https://doi.org/10.1126/science.adt1630)
+  - `final_predictions_80.tsv`: All predictions at 80% expected precision (29,257 interactions)
+  - `final_predictions_90.tsv`: Subset at 90% expected precision
+  - `README`: Description of the prediction file formats and column meanings
+
+### Mapping Scripts (R)
+- **extract_uniprot_ids.R**: Extracts unique UniProt IDs and gene names from PPI files
+- **map_uniprot_to_ensembl.R**: Uses biomaRt to map UniProt IDs to Ensembl gene IDs for human
+- **map_ppi_to_orthologs.R**: Maps PPI proteins to pike and salmon orthologs via OGtbl using N0 ortholog groups
+- **collapse_to_gene_level.R**: Collapses protein-level PPI to gene-level and identifies canonical ortholog ratios (1:1:1 and 1:1:2)
+- **analyze_missing_orthologs.R**: Analyzes why some PPI proteins lack fish orthologs
+- **ortholog_mapping_report.Rmd**: R Markdown report with gene-level analysis and canonical ortholog focus
+
+### Generated Mapping Files
+
+**Protein-Level Mapping:**
+- **unique_uniprot_ids.txt**: List of 12,298 unique UniProt IDs from PPI data
+- **unique_gene_names.txt**: List of unique gene names from PPI data
+- **uniprot_to_ensembl_human.tsv**: Human UniProt to Ensembl mapping (91,804 genes)
+- **uniprot_to_orthologs_mapping_N0.tsv**: Protein-level mapping to pike/salmon orthologs using N0 groups
+  - Uses N0 level to exclude ancient duplicates (pre-dating human-fish split)
+
+**Gene-Level Analysis (Recommended):**
+- **gene_level_ppi.tsv**: Gene-gene interactions (38,729 pairs from 13,520 unique genes)
+  - Collapsed from protein-level to eliminate isoform redundancy
+  - A gene pair interacts if any of their protein isoforms interact
+- **canonical_ortholog_genes.tsv**: Genes in canonical ortholog ratios
+  - 6,287 genes in 1:1:2 ratio (Hsap:Eluc:Ssal) - WGD duplicates
+  - 3,521 genes in 1:1:1 ratio (Hsap:Eluc:Ssal) - single-copy retained
+  - Total: 9,808 genes (49.7% of PPI genes)
+- **gene_level_ppi_canonical.tsv**: PPI pairs where both genes are in canonical OGs
+  - 10,218 pairs (26.4% of all gene-gene interactions)
+  - 4,564 pairs between two 1:1:2 genes
+  - 4,217 pairs between 1:1:2 and 1:1:1 genes
+  - 1,437 pairs between two 1:1:1 genes
+
+**Report:**
+- **ortholog_mapping_report.html**: Interactive HTML report with gene-level analysis
+  - Canonical ortholog ratio distributions
+  - PPI genes and pairs in canonical OGs
+  - Why genes aren't in canonical ratios (mammalian-specific, complex orthology)
+  - Recommendations for PPI evolution analysis
+
+## Research Workflow
+
+The project follows this pipeline:
+1. Identify duplicate genes in salmon and their pike orthologs using ortholog groups
+2. Categorize salmon duplicates by expression pattern (e.g., up+cons, down-down)
+3. Use pike orthologs to identify interaction partners via STRING database
+4. Identify salmon ortholog(s) of the interaction partners
+5. Generate protein pair combinations for AlphaFold3 prediction
+6. Analyze predicted interactions to understand how duplicates evolve different interaction profiles
+
+## Data Format
+
+The TSV files contain predicted protein-protein interactions with metadata including:
+- UniProt accessions and gene names for both proteins
+- Interaction probabilities from RF2-PPI and AlphaFold2
+- Source pipeline indicators (D: de novo with locality, U: de novo without locality, S: STRING-based, P: PPI database-based)
+- Template information from PDB
+- Database validation status (STRING, UniProt, BioGriD)
+- Protein characterization metrics from Unknome database
+- Subcellular localization and disease associations
+
+## Running R Scripts
+
+R scripts can be executed without execute permissions:
+```bash
+Rscript script_name.R
+```
+
+### ID Mapping Workflow
+
+The PPI data uses UniProt IDs, while OGtbl uses Ensembl gene IDs. The mapping pipeline is:
+
+1. **Extract UniProt IDs**: `Rscript extract_uniprot_ids.R`
+   - Extracts unique proteins from PPI files
+   - Outputs: `unique_uniprot_ids.txt`, `unique_gene_names.txt`
+
+2. **Map to Ensembl**: `Rscript map_uniprot_to_ensembl.R`
+   - Uses biomaRt package to query Ensembl BioMart
+   - Maps human UniProt IDs → human Ensembl gene IDs
+   - Outputs: `uniprot_to_ensembl_human.tsv`
+   - Note: Pike and salmon not in main Ensembl (use SalmoBase instead)
+
+3. **Find Orthologs**: `Rscript map_ppi_to_orthologs.R`
+   - Combines UniProt→Ensembl mapping with OGtbl N0 ortholog groups
+   - For each human PPI protein, finds pike and salmon orthologs
+   - **Uses N0 level** (not broad OG) to exclude ancient duplicates
+   - Outputs: `uniprot_to_orthologs_mapping_N0.tsv`
+   - Key finding: 71% of mapped proteins have 2+ salmon copies (WGD duplicates)
+
+4. **Collapse to Gene Level**: `Rscript collapse_to_gene_level.R`
+   - Collapses protein-level PPI to gene-level (eliminates isoform redundancy)
+   - Identifies canonical ortholog ratios: 1:1:1 and 1:1:2 (Hsap:Eluc:Ssal)
+   - Filters PPI pairs where both genes are in canonical OGs
+   - Outputs: `gene_level_ppi.tsv`, `canonical_ortholog_genes.tsv`, `gene_level_ppi_canonical.tsv`
+   - Key finding: 49.7% of genes in canonical OGs; 26.4% of pairs have both genes in canonical OGs
+
+5. **Generate Report**: `Rscript -e "rmarkdown::render('ortholog_mapping_report.Rmd')"`
+   - Creates interactive HTML report with gene-level analysis
+   - Focuses on canonical ortholog ratios (1:1:1 and 1:1:2)
+   - Analyzes PPI pairs where both genes are in canonical OGs
+   - Outputs: `ortholog_mapping_report.html`
+
+## Identifier Systems
+
+- **UniProt IDs**: Used in PPI predictions (e.g., O14948, P58012)
+- **Ensembl Gene IDs**:
+  - Human: ENSG00000... (Hsap)
+  - Pike: ENSELUG00000... (Eluc)
+  - Salmon: ENSSSAG00000... (Ssal)
+- **Ortholog Groups in OGtbl**:
+  - **OG**: Broadest level - includes all genes descended from common ancestor (includes ancient duplicates)
+  - **N0**: Hierarchical level used for this analysis - excludes ancient duplicates that pre-date the human-fish split
+  - **N1-N17**: Progressively finer taxonomic levels
+  - **Tip**: Finest-grained ortholog groups
+  - **Important**: Use N0 (not OG) to focus on salmon-specific WGD duplicates
+
+## Key Concepts
+
+- **Rediploidization**: The process where duplicated genes evolve back toward pre-duplication expression levels
+- **cons-down**: One copy retains ancestral expression while the other is downregulated
+- **down-down**: Both copies are downregulated
+- **cons-up**: One copy retains ancestral expression while the other is upregulated (potential neofunctionalization)
+- **Whole Genome Duplication (WGD)**: Salmon underwent WGD, resulting in many genes having 2+ copies compared to pike's single copy
+- **Canonical Ortholog Ratios**: Clean 1:1:1 or 1:1:2 patterns (Hsap:Eluc:Ssal) most informative for WGD studies
+  - **1:1:2**: One human, one pike, two salmon genes - expected WGD pattern (both duplicates retained)
+  - **1:1:1**: One human, one pike, one salmon gene - single-copy retained (rediploidization)
+  - Excludes ancient duplications and complex orthology patterns
+- **Gene-Level vs Protein-Level**: PPI data uses UniProt IDs (proteins/isoforms), but orthology is gene-based. Collapsing to gene level eliminates isoform redundancy and provides accurate statistics

@@ -1,0 +1,32 @@
+# Large data files (download using download_data.sh)
+final_predictions/
+OGtbl.tsv
+
+# copyrighted / private files, do not share
+science.adt1630.pdf
+meeting notes.md  
+
+# Generated mapping files
+unique_uniprot_ids.txt
+unique_gene_names.txt
+uniprot_to_ensembl_human.tsv
+uniprot_to_orthologs_mapping_N0.tsv
+gene_level_ppi.tsv
+canonical_ortholog_genes.tsv
+gene_level_ppi_canonical.tsv
+
+# Generated reports
+ortholog_mapping_report.html
+ortholog_mapping_report.knit.md
+
+# R stuff
+*.Rproj
+.Rhistory
+.RData
+.Rproj.user
+
+# macOS
+.DS_Store
+
+# Claude AI settings
+.claude/settings.local.json
