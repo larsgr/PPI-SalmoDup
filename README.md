@@ -58,6 +58,11 @@ Both reports show:
 - Canonical ortholog ratios (1:1:1 and 1:1:2)
 - PPI pairs suitable for comparative analysis
 
+**Key Output File**: `canonical_orthologs_with_ppi.tsv` (generated during report creation)
+- Contains 5,847 canonical ortholog groups with PPI partners
+- Includes gene names, protein IDs, ortholog group info, and interacting genes
+- See report for column descriptions and usage
+
 ## Key Results
 
 - **13,520 unique genes** in PPI dataset

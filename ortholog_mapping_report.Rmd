@@ -45,6 +45,7 @@ library(ggplot2)
 library(dplyr)
 library(tidyr)
 library(knitr)
+library(stringr)
 
 # Load gene-level PPI data
 gene_ppi <- read.table(
@@ -286,6 +287,106 @@ ggplot(ratio_combinations, aes(x = reorder(combo, -n_pairs), y = n_pairs)) +
 - **4,564 pairs** are between two 1:1:2 genes (both WGD duplicates)
 - **4,217 pairs** are between 1:1:2 and 1:1:1 genes (mixed)
 - **1,437 pairs** are between two 1:1:1 genes (both single-copy)
+
+## Canonical Ortholog Groups with PPI Partners
+
+This section generates a comprehensive table of all canonical ortholog groups (1:1:1 and 1:1:2) where the human gene has at least one PPI partner.
+
+```{r canonical_og_table}
+# Load original PPI data (skip comment lines)
+ppi_raw <- read.table(
+  "final_predictions/final_predictions_80.tsv",
+  header = TRUE,
+  sep = "\t",
+  skip = 28,
+  stringsAsFactors = FALSE,
+  quote = ""
+)
+
+# Get all UniProt IDs and gene names from PPI data
+ppi_proteins_info <- bind_rows(
+  ppi_raw %>% select(uniprot_id = Protein1, gene_name = Name1),
+  ppi_raw %>% select(uniprot_id = Protein2, gene_name = Name2)
+) %>%
+  distinct()
+
+# Load UniProt to Ensembl mapping
+uniprot_map <- read.table(
+  "uniprot_to_ensembl_human.tsv",
+  header = TRUE,
+  sep = "\t",
+  stringsAsFactors = FALSE
+)
+
+# Get all human genes that appear in canonical PPI pairs
+genes_with_ppi <- unique(c(gene_ppi_canonical$geneA, gene_ppi_canonical$geneB))
+
+# Get list of PPI partners for each gene
+ppi_partner_lists <- bind_rows(
+  gene_ppi_canonical %>% select(gene = geneA, partner = geneB),
+  gene_ppi_canonical %>% select(gene = geneB, partner = geneA)
+) %>%
+  group_by(gene) %>%
+  summarise(interacting_genes = paste(sort(unique(partner)), collapse = ","), .groups = "drop")
+
+# Map genes to their UniProt IDs (only those in PPI data) and gene names
+gene_to_info <- uniprot_map %>%
+  left_join(ppi_proteins_info, by = "uniprot_id") %>%
+  filter(!is.na(gene_name)) %>%  # Only keep proteins from PPI data
+  select(ensembl_gene_id, uniprot_id, gene_name) %>%
+  distinct() %>%
+  group_by(ensembl_gene_id) %>%
+  summarise(
+    human_protein_ids = paste(sort(unique(uniprot_id)), collapse = ","),
+    gene_name = paste(unique(gene_name), collapse = ","),
+    .groups = "drop"
+  )
+
+# Create the canonical ortholog table with PPI partners
+canonical_ppi_table <- canonical_genes %>%
+  filter(human_ensembl %in% genes_with_ppi) %>%
+  left_join(gene_to_info, by = c("human_ensembl" = "ensembl_gene_id")) %>%
+  left_join(ppi_partner_lists, by = c("human_ensembl" = "gene")) %>%
+  # Sort by number of partners
+  mutate(n_partners = str_count(interacting_genes, ",") + 1) %>%
+  arrange(desc(n_partners), ratio, human_ensembl) %>%
+  select(gene_name, human_gene_id = human_ensembl, human_protein_ids,
+         OG_N0 = ortholog_group_N0, pike_gene_id = pike_genes,
+         salmon_gene_id = salmon_genes, ratio, interacting_genes)
+
+# Save the table as TSV
+write.table(canonical_ppi_table,
+            file = "canonical_orthologs_with_ppi.tsv",
+            sep = "\t",
+            row.names = FALSE,
+            quote = FALSE)
+
+# Display summary statistics
+cat(sprintf("\n**Table saved to: canonical_orthologs_with_ppi.tsv**\n\n"))
+cat(sprintf("Total canonical genes with PPI partners: %d\n", nrow(canonical_ppi_table)))
+cat(sprintf("- 1:1:2 genes: %d\n", sum(canonical_ppi_table$ratio == "1:1:2")))
+cat(sprintf("- 1:1:1 genes: %d\n\n", sum(canonical_ppi_table$ratio == "1:1:1")))
+
+# Display sample (top 20 rows)
+cat("**Sample of the table (top 20 genes by number of PPI partners):**\n\n")
+kable(head(canonical_ppi_table, 20),
+      caption = "Top 20 genes by number of PPI partners (full table in canonical_orthologs_with_ppi.tsv)")
+```
+
+**Table columns:**
+- **gene_name**: Human gene name (e.g., EGFR, SQSTM1)
+- **human_gene_id**: Human Ensembl gene ID
+- **human_protein_ids**: UniProt protein IDs that appear in the PPI dataset (comma-separated)
+- **OG_N0**: N0-level ortholog group identifier
+- **pike_gene_id**: Pike ortholog gene ID(s)
+- **salmon_gene_id**: Salmon ortholog gene ID(s) - comma-separated for duplicates
+- **ratio**: Ortholog ratio (1:1:1 or 1:1:2)
+- **interacting_genes**: Comma-separated list of all human gene IDs that interact with this gene
+
+**How to use this table:**
+- **For 1:1:2 orthologs**: Compare pike gene → salmon duplicate A and duplicate B
+- **For 1:1:1 orthologs**: Compare pike gene → salmon single-copy gene
+- **Salmon gene pairs** (comma-separated in 1:1:2) represent WGD duplicates to test for PPI subfunctionalization
 
 ---
 
