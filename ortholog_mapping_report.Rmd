@@ -1,501 +1,395 @@
 ---
-title: "Protein-Protein Interaction Ortholog Mapping Report"
-subtitle: "Gene-Level Analysis: Mapping Human PPI Data to Pike and Salmon Orthologs"
+title: "PPI-SalmoDup: Human PPI Mapping to Salmon Orthologs"
 author: "PPI-SalmoDup Project"
 date: "`r Sys.Date()`"
 output:
   html_document:
     toc: true
     toc_float: true
-    toc_depth: 3
     theme: cosmo
     code_folding: hide
-    df_print: paged
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(
-  echo = TRUE,
-  warning = FALSE,
-  message = FALSE,
-  fig.width = 10,
-  fig.height = 6
-)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 10, fig.height = 6)
 ```
 
-# Executive Summary
+# Overview
 
-This report analyzes the mapping of human protein-protein interaction (PPI) data to orthologs in pike (*Esox lucius*) and salmon (*Salmo salar*) **at the gene level**. The goal is to identify which human PPI genes have conserved orthologs in fish species to study the evolution of protein interactions following salmon's whole-genome duplication (WGD).
+This analysis maps human protein-protein interactions (PPI) to orthologs in pike (*Esox lucius*) and salmon (*Salmo salar*) to study PPI evolution after salmon's whole-genome duplication (WGD). We focus on **canonical ortholog ratios**:
 
-**Key Findings:**
-- **13,520 unique genes** participate in 38,729 gene-gene interactions in the PPI dataset
-- **49.7%** of PPI genes (6,719 out of 13,520) map to **canonical ortholog groups**
-  - 32.0% in 1:1:2 ratio (one human, one pike, two salmon - WGD duplicates)
-  - 17.7% in 1:1:1 ratio (one human, one pike, one salmon - single copy)
-- **26.4%** of PPI pairs (10,218 out of 38,729) have **both genes in canonical OGs**
-- Remaining genes either lack fish orthologs (mammalian-specific) or have complex orthology patterns
+- **1:1:2** (Human:Pike:Salmon) - WGD pattern, both duplicates retained
+- **1:1:1** (Human:Pike:Salmon) - Single-copy retained (rediploidization)
 
----
+```{r packages}
+# Install packages if needed
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+if (!requireNamespace("biomaRt", quietly = TRUE)) BiocManager::install("biomaRt")
 
-# Data Loading
-
-```{r load_data}
-# Load required libraries
-library(ggplot2)
-library(dplyr)
-library(tidyr)
+library(biomaRt)
 library(knitr)
-library(stringr)
+library(tidyverse)
+```
 
-# Load gene-level PPI data
-gene_ppi <- read.table(
-    "gene_level_ppi.tsv",
-    header = TRUE,
-    sep = "\t",
-    stringsAsFactors = FALSE
+# 1. Data Download
+
+```{r download, cache=TRUE}
+# Download PPI predictions if not present
+if (!file.exists("final_predictions/final_predictions_80.tsv")) {
+  message("Downloading PPI predictions from Cong Lab...")
+  dir.create("final_predictions", showWarnings = FALSE)
+  download.file(
+    "https://conglab.swmed.edu/humanPPI/downloads/final_predictions.tar.gz",
+    "ppi.tar.gz", mode = "wb"
+  )
+  untar("ppi.tar.gz")
+  file.remove("ppi.tar.gz")
+}
+
+# Download ortholog table if not present
+if (!file.exists("OGtbl.tsv")) {
+  message("Downloading OGtbl.tsv from SalmoBase (115MB)...")
+  download.file(
+    "https://salmobase.org/datafiles/orthology/2021-11/Ortho_pipeline/OGtbl.tsv",
+    "OGtbl.tsv", mode = "wb"
+  )
+}
+```
+
+# 2. Load Data
+
+```{r load_data, cache=TRUE}
+# Load PPI predictions (skip comment header)
+ppi_raw <- read_tsv(
+  "final_predictions/final_predictions_80.tsv",
+  comment = "#", show_col_types = FALSE
 )
 
-# Load canonical ortholog genes
-canonical_genes <- read.table(
-    "canonical_ortholog_genes.tsv",
-    header = TRUE,
-    sep = "\t",
-    stringsAsFactors = FALSE
-)
+# Load ortholog table
+og_table <- read_tsv("OGtbl.tsv", show_col_types = FALSE)
 
-# Load canonical PPI pairs
-gene_ppi_canonical <- read.table(
-    "gene_level_ppi_canonical.tsv",
-    header = TRUE,
-    sep = "\t",
-    stringsAsFactors = FALSE
-)
+tibble(
+  Dataset = c("PPI interactions", "Ortholog table entries"),
+  Count = c(nrow(ppi_raw), nrow(og_table))
+) %>% kable(caption = "Input data summary")
+```
 
-# Load full ortholog mapping for additional analysis
-ortho_mapping <- read.table(
-    "uniprot_to_orthologs_mapping_N0.tsv",
-    header = TRUE,
-    sep = "\t",
-    stringsAsFactors = FALSE
-)
+# 3. UniProt to Ensembl Mapping
 
-# Get unique genes
+```{r biomart, cache=TRUE}
+# Cache biomaRt results for reproducibility
+cache_file <- ".biomart_cache_uniprot_ensembl.tsv"
+
+if (file.exists(cache_file)) {
+  message("Loading cached UniProt-Ensembl mapping...")
+  uniprot_ensembl <- read_tsv(cache_file, show_col_types = FALSE)
+} else {
+  message("Querying Ensembl for human UniProt to gene mapping (this takes a few minutes)...")
+  mart <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+  uniprot_ensembl <- getBM(
+    attributes = c("ensembl_gene_id", "uniprotswissprot", "uniprotsptrembl", "external_gene_name"),
+    mart = mart
+  ) %>%
+    as_tibble() %>%
+    # Prefer SwissProt over TrEMBL
+    mutate(uniprot_id = if_else(uniprotswissprot != "", uniprotswissprot, uniprotsptrembl)) %>%
+    filter(uniprot_id != "") %>%
+    select(ensembl_gene_id, uniprot_id, gene_name = external_gene_name) %>%
+    distinct()
+
+  # Save to cache
+  write_tsv(uniprot_ensembl, cache_file)
+  message("Saved biomaRt results to cache")
+}
+
+message(sprintf("Mapped %d UniProt IDs to Ensembl genes", n_distinct(uniprot_ensembl$uniprot_id)))
+```
+
+# 4. Collapse PPI to Gene Level
+
+```{r gene_level}
+# Extract all proteins from PPI data
+ppi_proteins <- bind_rows(
+  ppi_raw %>% select(uniprot_id = Protein1, gene_name_ppi = Name1),
+  ppi_raw %>% select(uniprot_id = Protein2, gene_name_ppi = Name2)
+) %>% distinct()
+
+# Map PPI proteins to Ensembl genes
+ppi_to_gene <- ppi_proteins %>%
+  inner_join(uniprot_ensembl %>% select(uniprot_id, ensembl_gene_id), by = "uniprot_id")
+
+# Create gene-level PPI (map proteins to genes, then deduplicate)
+gene_ppi <- ppi_raw %>%
+  inner_join(ppi_to_gene %>% select(uniprot_id, gene1 = ensembl_gene_id),
+             by = c("Protein1" = "uniprot_id")) %>%
+  inner_join(ppi_to_gene %>% select(uniprot_id, gene2 = ensembl_gene_id),
+             by = c("Protein2" = "uniprot_id")) %>%
+  # Create ordered pairs to avoid A-B and B-A duplicates
+  mutate(
+    geneA = if_else(gene1 < gene2, gene1, gene2),
+    geneB = if_else(gene1 < gene2, gene2, gene1)
+  ) %>%
+  distinct(geneA, geneB)
+
 unique_genes <- unique(c(gene_ppi$geneA, gene_ppi$geneB))
-n_total_genes <- length(unique_genes)
-n_total_pairs <- nrow(gene_ppi)
+
+tibble(
+  Metric = c("Gene-gene interactions", "Unique genes in PPI"),
+  Count = c(nrow(gene_ppi), length(unique_genes))
+) %>% kable(caption = "Gene-level PPI summary")
 ```
 
----
+# 5. Map to Fish Orthologs
 
-# Gene-Level PPI Dataset
+```{r orthologs, cache=TRUE}
+# Filter OGtbl for species of interest
+og_species <- og_table %>%
+  filter(spc %in% c("Hsap", "Eluc", "Ssal"), !is.na(N0)) %>%
+  select(geneID, spc, N0)
 
-## Why Gene-Level Analysis?
+# Get human genes (from PPI) with their N0 groups
+human_n0 <- og_species %>%
+  filter(spc == "Hsap", geneID %in% unique_genes) %>%
+  select(human_gene = geneID, N0)
 
-The original PPI dataset uses UniProt IDs, which can represent **multiple protein isoforms** from the same gene. Since ortholog mapping is gene-based (not isoform-based), we collapsed the data to gene level:
+# For each N0 group, count how many PPI genes it has (not all human genes!)
+human_per_n0 <- human_n0 %>%
+  group_by(N0) %>%
+  summarise(n_human_ppi = n_distinct(human_gene), .groups = "drop")
 
-- **Gene-gene interaction exists** if any protein isoform pair between the two genes interacts
-- Eliminates double-counting of interactions due to alternative splicing
+# Get pike and salmon counts for each N0
+fish_per_n0 <- og_species %>%
+  filter(spc %in% c("Eluc", "Ssal")) %>%
+  group_by(N0) %>%
+  summarise(
+    n_pike = sum(spc == "Eluc"),
+    n_salmon = sum(spc == "Ssal"),
+    pike_genes = paste(geneID[spc == "Eluc"], collapse = ","),
+    salmon_genes = paste(geneID[spc == "Ssal"], collapse = ","),
+    .groups = "drop"
+  )
 
-```{r gene_summary}
-summary_stats <- data.frame(
-  Metric = c("Total gene-gene interactions",
-             "Total unique genes in PPI"),
-  Count = c(n_total_pairs, n_total_genes)
-)
+# Join counts
+n0_with_counts <- human_per_n0 %>%
+  left_join(fish_per_n0, by = "N0") %>%
+  filter(!is.na(n_pike), !is.na(n_salmon))
 
-kable(summary_stats,
-      caption = "Gene-Level PPI Dataset Summary",
-      col.names = c("Metric", "Count"))
+# Join human genes with their ortholog info
+human_orthologs <- human_n0 %>%
+  left_join(n0_with_counts, by = "N0") %>%
+  filter(!is.na(n_human_ppi))
+
+message(sprintf("Found %d PPI genes with fish orthologs", nrow(human_orthologs)))
 ```
 
----
+# 6. Canonical Ortholog Ratios
 
-# Canonical Ortholog Ratios
+Canonical ratios are the cleanest orthology patterns for WGD analysis:
 
-We focus on **canonical ortholog ratios** that are most informative for studying WGD:
+- **1:1:2**: Expected WGD pattern (both salmon duplicates retained)
+- **1:1:1**: Single-copy retained (rediploidization)
 
-- **1:1:2 (Hsap:Eluc:Ssal)**: One human gene, one pike gene, two salmon genes
-  - **Expected WGD pattern** - salmon retained both duplicates
+```{r canonical}
+# Identify canonical ortholog groups (only 1 PPI gene per N0 for human)
+canonical_genes <- human_orthologs %>%
+  filter(n_human_ppi == 1, n_pike == 1, n_salmon %in% c(1, 2)) %>%
+  mutate(ratio = if_else(n_salmon == 2, "1:1:2", "1:1:1"))
 
-- **1:1:1 (Hsap:Eluc:Ssal)**: One human gene, one pike gene, one salmon gene
-  - **Single-copy retained** - salmon lost one duplicate (rediploidization)
+# For summary stats
+canonical_ogs <- canonical_genes %>%
+  distinct(N0, ratio)
 
-These exclude:
-- Ancient duplications (pre-dating human-fish split)
-- Complex orthology patterns (e.g., 2:2:4, 1:2:3)
-- Lineage-specific losses or duplications
+# Count PPI genes in canonical OGs
+ppi_in_canonical <- unique_genes[unique_genes %in% canonical_genes$human_gene]
 
-```{r canonical_stats}
+# Filter PPI pairs where both genes are canonical
+gene_ppi_canonical <- gene_ppi %>%
+  filter(geneA %in% canonical_genes$human_gene, geneB %in% canonical_genes$human_gene)
+
+tibble(
+  Metric = c(
+    "Canonical OGs (1:1:2)", "Canonical OGs (1:1:1)",
+    "PPI genes in canonical OGs", "PPI pairs (both genes canonical)"
+  ),
+  Count = c(
+    sum(canonical_ogs$ratio == "1:1:2"), sum(canonical_ogs$ratio == "1:1:1"),
+    length(ppi_in_canonical), nrow(gene_ppi_canonical)
+  ),
+  Percentage = c(
+    NA, NA,
+    100 * length(ppi_in_canonical) / length(unique_genes),
+    100 * nrow(gene_ppi_canonical) / nrow(gene_ppi)
+  )
+) %>% kable(digits = 1, caption = "Canonical ortholog summary")
+```
+
+# 7. Results
+
+## Canonical Ratio Distribution
+
+```{r fig_ratios, fig.height=5}
 canonical_summary <- canonical_genes %>%
-  group_by(ratio) %>%
-  summarise(n_genes = n(), .groups = "drop") %>%
-  mutate(percentage = 100 * n_genes / sum(n_genes))
+  count(ratio) %>%
+  mutate(pct = 100 * n / sum(n))
 
-kable(canonical_summary,
-      digits = 1,
-      caption = "Canonical Ortholog Ratio Distribution",
-      col.names = c("Ratio (Hsap:Eluc:Ssal)", "Number of Genes", "Percentage (%)"))
-```
-
-```{r canonical_pie, fig.height=5}
-ggplot(canonical_summary, aes(x = "", y = n_genes, fill = ratio)) +
+ggplot(canonical_summary, aes(x = "", y = n, fill = ratio)) +
   geom_bar(stat = "identity", width = 1) +
-  coord_polar("y", start = 0) +
-  geom_text(aes(label = sprintf("%s\n%d genes\n(%.1f%%)", ratio, n_genes, percentage)),
-            position = position_stack(vjust = 0.5),
-            size = 5,
-            color = "white",
-            fontface = "bold") +
+  coord_polar("y") +
+  geom_text(aes(label = sprintf("%s\n%d genes\n(%.1f%%)", ratio, n, pct)),
+            position = position_stack(vjust = 0.5), color = "white", fontface = "bold", size = 5) +
   scale_fill_manual(values = c("1:1:1" = "#e74c3c", "1:1:2" = "#3498db"),
                     labels = c("1:1:1 (single copy)", "1:1:2 (WGD duplicates)")) +
   theme_void() +
-  theme(legend.position = "bottom",
-        legend.title = element_blank(),
-        plot.title = element_text(hjust = 0.5, size = 14, face = "bold")) +
-  labs(title = "Distribution of Canonical Ortholog Ratios")
+  theme(legend.position = "bottom", legend.title = element_blank()) +
+  labs(title = "Canonical Ortholog Ratio Distribution")
 ```
 
-**Interpretation:** 64% of canonical orthologs show the 1:1:2 pattern, consistent with salmon WGD where both duplicates were retained.
+## PPI Genes by Canonical Status
 
----
-
-# PPI Genes in Canonical Ortholog Groups
-
-```{r ppi_canonical_genes}
-ppi_genes_in_canonical <- unique_genes[unique_genes %in% canonical_genes$human_ensembl]
-
-ppi_canonical_breakdown <- data.frame(
-  Category = c("1:1:2 (WGD duplicates)",
-               "1:1:1 (single copy)",
-               "Total in canonical OGs",
-               "Not in canonical OGs",
-               "Total PPI genes"),
+```{r fig_genes}
+gene_status <- tibble(
+  Category = c("1:1:2 (WGD)", "1:1:1 (single)", "Not canonical"),
   Count = c(
-    sum(unique_genes %in% (canonical_genes %>% filter(ratio == "1:1:2") %>% pull(human_ensembl))),
-    sum(unique_genes %in% (canonical_genes %>% filter(ratio == "1:1:1") %>% pull(human_ensembl))),
-    length(ppi_genes_in_canonical),
-    n_total_genes - length(ppi_genes_in_canonical),
-    n_total_genes
+    sum(unique_genes %in% filter(canonical_genes, ratio == "1:1:2")$human_gene),
+    sum(unique_genes %in% filter(canonical_genes, ratio == "1:1:1")$human_gene),
+    sum(!unique_genes %in% canonical_genes$human_gene)
   )
-)
-ppi_canonical_breakdown$Percentage <- 100 * ppi_canonical_breakdown$Count / n_total_genes
+) %>% mutate(Pct = 100 * Count / sum(Count))
 
-kable(ppi_canonical_breakdown,
-      digits = 1,
-      caption = "PPI Genes by Canonical Ortholog Status",
-      col.names = c("Category", "Count", "Percentage (%)"))
-```
-
-```{r ppi_genes_plot, fig.height=6}
-plot_data <- ppi_canonical_breakdown[1:3, ]
-
-ggplot(plot_data, aes(x = reorder(Category, -Count), y = Count)) +
-  geom_bar(stat = "identity", fill = c("#3498db", "#e74c3c", "#2ecc71"), alpha = 0.8) +
-  geom_text(aes(label = sprintf("%d\n(%.1f%%)", Count, Percentage)),
-            vjust = -0.3, size = 4.5, fontface = "bold") +
-  labs(title = "PPI Genes in Canonical Ortholog Groups",
-       subtitle = sprintf("%.1f%% of PPI genes map to canonical 1:1:1 or 1:1:2 ortholog groups",
-                         100 * length(ppi_genes_in_canonical) / n_total_genes),
-       x = "",
-       y = "Number of Genes") +
+ggplot(gene_status, aes(x = fct_reorder(Category, -Count), y = Count, fill = Category)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = sprintf("%d\n(%.1f%%)", Count, Pct)), vjust = -0.2, fontface = "bold") +
+  scale_fill_manual(values = c("1:1:2 (WGD)" = "#3498db", "1:1:1 (single)" = "#e74c3c", "Not canonical" = "#95a5a6")) +
+  labs(title = "PPI Genes by Canonical Ortholog Status", x = "", y = "Number of genes") +
   theme_minimal() +
-  theme(axis.text.x = element_text(angle = 15, hjust = 1, size = 11),
-        plot.title = element_text(size = 14, face = "bold"),
-        plot.subtitle = element_text(size = 11, color = "gray30"))
+  theme(axis.text.x = element_text(size = 11))
 ```
 
----
+## PPI Pairs by Ratio Combination
 
-# PPI Pairs with Both Genes in Canonical OGs
-
-For comparative analysis of PPI evolution, we focus on **gene pairs where BOTH genes are in canonical ortholog groups**.
-
-```{r ppi_pairs_canonical}
-# Add ratio information to gene pairs
-gene_ppi_with_ratios <- gene_ppi %>%
-  left_join(canonical_genes %>% select(human_ensembl, ratioA = ratio),
-            by = c("geneA" = "human_ensembl")) %>%
-  left_join(canonical_genes %>% select(human_ensembl, ratioB = ratio),
-            by = c("geneB" = "human_ensembl")) %>%
-  mutate(
-    both_canonical = !is.na(ratioA) & !is.na(ratioB),
-    pair_type = case_when(
-      is.na(ratioA) & is.na(ratioB) ~ "Neither gene in canonical OG",
-      is.na(ratioA) | is.na(ratioB) ~ "One gene in canonical OG",
-      TRUE ~ "Both genes in canonical OG"
-    )
-  )
-
-pair_summary <- gene_ppi_with_ratios %>%
-  group_by(pair_type) %>%
-  summarise(n_pairs = n(), .groups = "drop") %>%
-  mutate(percentage = 100 * n_pairs / sum(n_pairs)) %>%
-  arrange(desc(n_pairs))
-
-kable(pair_summary,
-      digits = 1,
-      caption = "PPI Pairs by Canonical Ortholog Status",
-      col.names = c("Pair Type", "Number of Pairs", "Percentage (%)"))
-```
-
-```{r pair_type_plot, fig.height=5}
-ggplot(pair_summary, aes(x = reorder(pair_type, -n_pairs), y = n_pairs)) +
-  geom_bar(stat = "identity", fill = c("#2ecc71", "#f39c12", "#95a5a6"), alpha = 0.8) +
-  geom_text(aes(label = sprintf("%d\n(%.1f%%)", n_pairs, percentage)),
-            vjust = -0.3, size = 4.5, fontface = "bold") +
-  labs(title = "PPI Pairs by Canonical Ortholog Coverage",
-       x = "",
-       y = "Number of Gene-Gene Interactions") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 15, hjust = 1, size = 11),
-        plot.title = element_text(size = 14, face = "bold"))
-```
-
-## Breakdown by Ratio Combinations
-
-```{r ratio_combinations}
-ratio_combinations <- gene_ppi_with_ratios %>%
-  filter(both_canonical) %>%
-  group_by(ratioA, ratioB) %>%
-  summarise(n_pairs = n(), .groups = "drop") %>%
-  arrange(desc(n_pairs))
-
-kable(ratio_combinations,
-      caption = "PPI Pairs by Ortholog Ratio Combinations (Both Genes in Canonical OGs)",
-      col.names = c("Gene A Ratio", "Gene B Ratio", "Number of Pairs"))
-```
-
-```{r ratio_combo_plot, fig.height=5}
-# Create combination labels
-ratio_combinations <- ratio_combinations %>%
+```{r fig_pairs}
+# Add ratio info to canonical PPI pairs
+pair_ratios <- gene_ppi_canonical %>%
+  left_join(canonical_genes %>% select(human_gene, ratioA = ratio), by = c("geneA" = "human_gene")) %>%
+  left_join(canonical_genes %>% select(human_gene, ratioB = ratio), by = c("geneB" = "human_gene")) %>%
+  count(ratioA, ratioB) %>%
   mutate(combo = paste(ratioA, "x", ratioB))
 
-ggplot(ratio_combinations, aes(x = reorder(combo, -n_pairs), y = n_pairs)) +
-  geom_bar(stat = "identity", fill = "#9b59b6", alpha = 0.8) +
-  geom_text(aes(label = n_pairs), vjust = -0.3, size = 4.5, fontface = "bold") +
-  labs(title = "PPI Pairs by Ortholog Ratio Combinations",
-       subtitle = "Both genes must be in canonical 1:1:1 or 1:1:2 ortholog groups",
-       x = "Ratio Combination",
-       y = "Number of Gene-Gene Interactions") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 15, hjust = 1, size = 11),
-        plot.title = element_text(size = 14, face = "bold"),
-        plot.subtitle = element_text(size = 11, color = "gray30"))
+ggplot(pair_ratios, aes(x = fct_reorder(combo, -n), y = n)) +
+  geom_col(fill = "#9b59b6", alpha = 0.8) +
+  geom_text(aes(label = n), vjust = -0.3, fontface = "bold") +
+  labs(title = "PPI Pairs by Ortholog Ratio Combination",
+       subtitle = "Both genes must be in canonical OGs",
+       x = "Ratio combination", y = "Number of pairs") +
+  theme_minimal()
 ```
 
-**Key Observations:**
-- **4,564 pairs** are between two 1:1:2 genes (both WGD duplicates)
-- **4,217 pairs** are between 1:1:2 and 1:1:1 genes (mixed)
-- **1,437 pairs** are between two 1:1:1 genes (both single-copy)
+## Why Genes Lack Canonical Orthologs
 
-## Canonical Ortholog Groups with PPI Partners
+```{r fig_reasons}
+non_canonical <- unique_genes[!unique_genes %in% canonical_genes$human_gene]
+has_any_orthologs <- non_canonical[non_canonical %in% human_orthologs$human_gene]
 
-This section generates a comprehensive table of all canonical ortholog groups (1:1:1 and 1:1:2) where the human gene has at least one PPI partner.
-
-```{r canonical_og_table}
-# Load original PPI data (skip comment lines)
-ppi_raw <- read.table(
-  "final_predictions/final_predictions_80.tsv",
-  header = TRUE,
-  sep = "\t",
-  skip = 28,
-  stringsAsFactors = FALSE,
-  quote = ""
+reasons <- tibble(
+  Reason = c("No fish orthologs\n(mammalian-specific)", "Complex orthology\n(not 1:1:1 or 1:1:2)"),
+  Count = c(length(non_canonical) - length(has_any_orthologs), length(has_any_orthologs))
 )
 
-# Get all UniProt IDs and gene names from PPI data
-ppi_proteins_info <- bind_rows(
-  ppi_raw %>% select(uniprot_id = Protein1, gene_name = Name1),
-  ppi_raw %>% select(uniprot_id = Protein2, gene_name = Name2)
-) %>%
-  distinct()
+ggplot(reasons, aes(x = fct_reorder(Reason, -Count), y = Count)) +
+  geom_col(fill = c("#f39c12", "#1abc9c"), alpha = 0.8) +
+  geom_text(aes(label = Count), vjust = -0.3, fontface = "bold") +
+  labs(title = "Why PPI Genes Are Not in Canonical OGs", x = "", y = "Number of genes") +
+  theme_minimal()
+```
 
-# Load UniProt to Ensembl mapping
-uniprot_map <- read.table(
-  "uniprot_to_ensembl_human.tsv",
-  header = TRUE,
-  sep = "\t",
-  stringsAsFactors = FALSE
-)
+# 8. Output Table
 
-# Get all human genes that appear in canonical PPI pairs
-genes_with_ppi <- unique(c(gene_ppi_canonical$geneA, gene_ppi_canonical$geneB))
+The main output is `canonical_orthologs_with_ppi.tsv` containing canonical ortholog groups where the human gene participates in PPI.
 
-# Get list of PPI partners for each gene
-ppi_partner_lists <- bind_rows(
+```{r output_table}
+# Get genes that appear in canonical PPI pairs
+genes_with_canonical_ppi <- unique(c(gene_ppi_canonical$geneA, gene_ppi_canonical$geneB))
+
+# Build PPI partner lists for each gene
+ppi_partners <- bind_rows(
   gene_ppi_canonical %>% select(gene = geneA, partner = geneB),
   gene_ppi_canonical %>% select(gene = geneB, partner = geneA)
 ) %>%
   group_by(gene) %>%
   summarise(interacting_genes = paste(sort(unique(partner)), collapse = ","), .groups = "drop")
 
-# Map genes to their UniProt IDs (only those in PPI data) and gene names
-gene_to_info <- uniprot_map %>%
-  left_join(ppi_proteins_info, by = "uniprot_id") %>%
-  filter(!is.na(gene_name)) %>%  # Only keep proteins from PPI data
-  select(ensembl_gene_id, uniprot_id, gene_name) %>%
-  distinct() %>%
+# Map genes to UniProt IDs that appear in PPI data
+gene_to_proteins <- ppi_to_gene %>%
   group_by(ensembl_gene_id) %>%
-  summarise(
-    human_protein_ids = paste(sort(unique(uniprot_id)), collapse = ","),
-    gene_name = paste(unique(gene_name), collapse = ","),
-    .groups = "drop"
+  summarise(human_protein_ids = paste(sort(unique(uniprot_id)), collapse = ","), .groups = "drop")
+
+# Get gene names from UniProt mapping
+gene_names <- uniprot_ensembl %>%
+  filter(gene_name != "") %>%
+  group_by(ensembl_gene_id) %>%
+  summarise(gene_name = first(gene_name), .groups = "drop")
+
+# Create final output table
+canonical_ppi_table <- canonical_genes %>%
+  filter(human_gene %in% genes_with_canonical_ppi) %>%
+  left_join(gene_names, by = c("human_gene" = "ensembl_gene_id")) %>%
+  left_join(gene_to_proteins, by = c("human_gene" = "ensembl_gene_id")) %>%
+  left_join(ppi_partners, by = c("human_gene" = "gene")) %>%
+  mutate(n_partners = str_count(interacting_genes, ",") + 1) %>%
+  arrange(desc(n_partners)) %>%
+  select(
+    gene_name,
+    human_gene_id = human_gene,
+    human_protein_ids,
+    OG_N0 = N0,
+    pike_gene_id = pike_genes,
+    salmon_gene_id = salmon_genes,
+    ratio,
+    interacting_genes
   )
 
-# Create the canonical ortholog table with PPI partners
-canonical_ppi_table <- canonical_genes %>%
-  filter(human_ensembl %in% genes_with_ppi) %>%
-  left_join(gene_to_info, by = c("human_ensembl" = "ensembl_gene_id")) %>%
-  left_join(ppi_partner_lists, by = c("human_ensembl" = "gene")) %>%
-  # Sort by number of partners
-  mutate(n_partners = str_count(interacting_genes, ",") + 1) %>%
-  arrange(desc(n_partners), ratio, human_ensembl) %>%
-  select(gene_name, human_gene_id = human_ensembl, human_protein_ids,
-         OG_N0 = ortholog_group_N0, pike_gene_id = pike_genes,
-         salmon_gene_id = salmon_genes, ratio, interacting_genes)
+# Save output
+write_tsv(canonical_ppi_table, "canonical_orthologs_with_ppi.tsv")
 
-# Save the table as TSV
-write.table(canonical_ppi_table,
-            file = "canonical_orthologs_with_ppi.tsv",
-            sep = "\t",
-            row.names = FALSE,
-            quote = FALSE)
-
-# Display summary statistics
-cat(sprintf("\n**Table saved to: canonical_orthologs_with_ppi.tsv**\n\n"))
-cat(sprintf("Total canonical genes with PPI partners: %d\n", nrow(canonical_ppi_table)))
-cat(sprintf("- 1:1:2 genes: %d\n", sum(canonical_ppi_table$ratio == "1:1:2")))
-cat(sprintf("- 1:1:1 genes: %d\n\n", sum(canonical_ppi_table$ratio == "1:1:1")))
-
-# Display sample (top 20 rows)
-cat("**Sample of the table (top 20 genes by number of PPI partners):**\n\n")
-kable(head(canonical_ppi_table, 20),
-      caption = "Top 20 genes by number of PPI partners (full table in canonical_orthologs_with_ppi.tsv)")
+message(sprintf("Saved %d canonical genes with PPI partners to canonical_orthologs_with_ppi.tsv", nrow(canonical_ppi_table)))
+message(sprintf("  - 1:1:2 genes: %d", sum(canonical_ppi_table$ratio == "1:1:2")))
+message(sprintf("  - 1:1:1 genes: %d", sum(canonical_ppi_table$ratio == "1:1:1")))
 ```
 
-**Table columns:**
-- **gene_name**: Human gene name (e.g., EGFR, SQSTM1)
-- **human_gene_id**: Human Ensembl gene ID
-- **human_protein_ids**: UniProt protein IDs that appear in the PPI dataset (comma-separated)
-- **OG_N0**: N0-level ortholog group identifier
-- **pike_gene_id**: Pike ortholog gene ID(s)
-- **salmon_gene_id**: Salmon ortholog gene ID(s) - comma-separated for duplicates
-- **ratio**: Ortholog ratio (1:1:1 or 1:1:2)
-- **interacting_genes**: Comma-separated list of all human gene IDs that interact with this gene
+**Top 20 genes by number of PPI partners:**
 
-**How to use this table:**
-- **For 1:1:2 orthologs**: Compare pike gene → salmon duplicate A and duplicate B
-- **For 1:1:1 orthologs**: Compare pike gene → salmon single-copy gene
-- **Salmon gene pairs** (comma-separated in 1:1:2) represent WGD duplicates to test for PPI subfunctionalization
-
----
-
-# Why Aren't All Genes in Canonical OGs?
-
-```{r non_canonical_analysis}
-# Analyze genes NOT in canonical OGs
-non_canonical_genes <- unique_genes[!unique_genes %in% canonical_genes$human_ensembl]
-
-# Check if they're in ortholog mapping at all
-genes_with_orthologs <- unique(ortho_mapping$human_ensembl)
-non_canonical_with_orthologs <- non_canonical_genes[non_canonical_genes %in% genes_with_orthologs]
-non_canonical_no_orthologs <- non_canonical_genes[!non_canonical_genes %in% genes_with_orthologs]
-
-reasons <- data.frame(
-  Reason = c("No fish orthologs (mammalian-specific)",
-             "Complex orthology patterns (not 1:1:1 or 1:1:2)"),
-  Count = c(length(non_canonical_no_orthologs),
-            length(non_canonical_with_orthologs))
-)
-reasons$Percentage <- 100 * reasons$Count / length(non_canonical_genes)
-
-kable(reasons,
-      digits = 1,
-      caption = "Why PPI Genes Are Not in Canonical Ortholog Groups",
-      col.names = c("Reason", "Count", "% of Non-Canonical"))
+```{r show_table}
+canonical_ppi_table %>%
+  head(20) %>%
+  kable(caption = "Sample of canonical_orthologs_with_ppi.tsv (top 20 by PPI partners)")
 ```
 
-```{r complex_orthology_examples}
-# Get examples of complex orthology patterns
-if (length(non_canonical_with_orthologs) > 0) {
-  complex_examples <- ortho_mapping %>%
-    filter(human_ensembl %in% non_canonical_with_orthologs) %>%
-    # Count human genes per OG
-    group_by(ortholog_group_N0, n_pike, n_salmon) %>%
-    summarise(n_human = n_distinct(human_ensembl), .groups = "drop") %>%
-    filter(!(n_human == 1 & n_pike == 1 & (n_salmon == 1 | n_salmon == 2))) %>%
-    group_by(n_human, n_pike, n_salmon) %>%
-    summarise(n_og_groups = n(), .groups = "drop") %>%
-    arrange(desc(n_og_groups)) %>%
-    head(10)
+**Column descriptions:**
 
-  kable(complex_examples,
-        caption = "Examples of Complex Orthology Patterns (Top 10)",
-        col.names = c("Human Genes", "Pike Genes", "Salmon Genes", "Number of OG Groups"))
-}
-```
+- `gene_name`: Human gene symbol
+- `human_gene_id`: Human Ensembl gene ID
+- `human_protein_ids`: UniProt IDs from PPI dataset (comma-separated)
+- `OG_N0`: N0-level ortholog group ID
+- `pike_gene_id`: Pike ortholog Ensembl ID
+- `salmon_gene_id`: Salmon ortholog Ensembl ID(s) (comma-separated for 1:1:2)
+- `ratio`: Ortholog ratio (1:1:1 or 1:1:2)
+- `interacting_genes`: Human Ensembl IDs of PPI partners (comma-separated)
 
-**Complex Patterns Include:**
-- Ancient duplications (e.g., 2:2:4, 2:1:2)
-- Lineage-specific losses (e.g., 1:0:2, 1:2:2)
-- Lineage-specific duplications (e.g., 1:3:2, 1:1:5)
+# 9. Conclusions
+
+1. **`r sprintf("%.1f%%", 100 * length(ppi_in_canonical) / length(unique_genes))`** of PPI genes (`r length(ppi_in_canonical)` of `r length(unique_genes)`) map to canonical ortholog groups
+2. **`r sprintf("%.1f%%", 100 * nrow(gene_ppi_canonical) / nrow(gene_ppi))`** of PPI pairs (`r nrow(gene_ppi_canonical)` of `r nrow(gene_ppi)`) have both genes in canonical OGs
+3. Among canonical orthologs, **`r sprintf("%.1f%%", 100 * sum(canonical_genes$ratio == "1:1:2") / nrow(canonical_genes))`** show the 1:1:2 pattern (WGD duplicates retained)
+
+These `r nrow(gene_ppi_canonical)` canonical PPI pairs are suitable for studying PPI evolution after salmon WGD.
 
 ---
 
-# Salmon Gene Duplication in Canonical OGs
+**Data sources:**
 
-```{r salmon_duplication_canonical}
-# Analyze salmon duplication status for canonical genes
-salmon_dup_summary <- canonical_genes %>%
-  mutate(salmon_status = ifelse(n_salmon == 1, "Single-copy", "Duplicated")) %>%
-  group_by(salmon_status) %>%
-  summarise(n_genes = n(), .groups = "drop") %>%
-  mutate(percentage = 100 * n_genes / sum(n_genes))
-
-kable(salmon_dup_summary,
-      digits = 1,
-      caption = "Salmon Gene Copy Status in Canonical Ortholog Groups",
-      col.names = c("Salmon Status", "Number of Genes", "Percentage (%)"))
-```
-
-**Interpretation:** Among canonical ortholog groups, 64.1% show salmon-specific duplication (1:1:2), while 35.9% have returned to single-copy status (1:1:1) through rediploidization.
-
----
-
-# Conclusions
-
-1. **Gene-Level Analysis is Critical:** Collapsing to gene level revealed 13,520 unique genes (vs 12,298 unique proteins), eliminating protein isoform redundancy
-
-2. **Canonical Ortholog Coverage:** 49.7% of PPI genes map to canonical 1:1:1 or 1:1:2 ortholog groups
-   - 32.0% in 1:1:2 ratio (WGD duplicates)
-   - 17.7% in 1:1:1 ratio (single-copy retained)
-
-3. **Analyzable PPI Pairs:** 26.4% of gene-gene interactions (10,218 pairs) have both genes in canonical ortholog groups
-   - These are the most informative for studying PPI evolution post-WGD
-   - 4,564 pairs between two WGD duplicate genes (1:1:2 × 1:1:2)
-
-4. **WGD Retention:** Among canonical orthologs, 64% retained both salmon duplicates (1:1:2), showing strong duplicate retention post-WGD
-
-5. **Non-Canonical Genes:** The remaining 50.3% either:
-   - Lack fish orthologs (mammalian-specific: ~40%)
-   - Have complex orthology patterns not fitting 1:1:1 or 1:1:2 (~10%)
-
----
-
-# Recommendations for Analysis
-
-For studying PPI evolution after salmon WGD, focus on the **10,218 gene pairs where both genes are in canonical ortholog groups**. These provide:
-
-- Clean orthology relationships (no ancient duplicates)
-- Clear comparison: pike (1 copy) vs salmon (1 or 2 copies)
-- Well-defined evolutionary scenarios for testing hypotheses about:
-  - PPI retention/loss in duplicates
-  - Subfunctionalization at the interaction level
-  - Dosage balance constraints
-
----
-
-# Session Information
+- PPI predictions: [Cong et al. 2024, Science](https://doi.org/10.1126/science.adt1630)
+- Ortholog groups: [SalmoBase](https://salmobase.org/)
 
 ```{r session_info}
 sessionInfo()

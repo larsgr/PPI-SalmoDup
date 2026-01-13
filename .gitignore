@@ -1,25 +1,22 @@
-# Large data files (download using download_data.sh)
+# Downloaded data (auto-downloaded by Rmd)
 final_predictions/
 OGtbl.tsv
 
-# copyrighted / private files, do not share
+# Private/copyrighted files
 science.adt1630.pdf
-meeting notes.md  
+meeting notes.md
 
-# Generated mapping files
-unique_uniprot_ids.txt
-unique_gene_names.txt
-uniprot_to_ensembl_human.tsv
-uniprot_to_orthologs_mapping_N0.tsv
-gene_level_ppi.tsv
-canonical_ortholog_genes.tsv
-gene_level_ppi_canonical.tsv
-
-# Generated reports
+# Generated reports (regenerate with Rmd)
 ortholog_mapping_report.html
-ortholog_mapping_report.knit.md
+ortholog_mapping_report_files/
+ortholog_mapping_report_cache/
+*.knit.md
 
-# R stuff
+# Temporary/backup files
+*_old.tsv
+.biomart_cache_uniprot_ensembl.tsv
+
+# R
 *.Rproj
 .Rhistory
 .RData
@@ -28,5 +25,5 @@ ortholog_mapping_report.knit.md
 # macOS
 .DS_Store
 
-# Claude AI settings
-.claude/settings.local.json
+# Claude
+.claude/
